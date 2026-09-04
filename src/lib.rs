@@ -26,6 +26,8 @@ mod pb {
 }
 
 use substreams::errors::Error;
+use substreams_database_change::pb::sf::substreams::sink::database::v1::DatabaseChanges;
+use substreams_database_change::tables::Tables;
 use substreams::pb::sf::substreams::index::v1::Keys;
 use substreams::store::{
     StoreGet, StoreGetString, StoreNew, StoreSetIfNotExists, StoreSetIfNotExistsString,
@@ -352,4 +354,247 @@ pub fn index_events(events: lp::Events) -> Result<Keys, Error> {
     keys.sort();
     keys.dedup();
     Ok(Keys { keys })
+}
+
+// ─────────────────────────── 6. SQL sink ───────────────────────────
+
+/// Rows for the Postgres sink, one table per message type plus `position_delta`.
+///
+/// Identity is `(transaction_hash, log_index)` — the log's position in the chain, not a synthetic id.
+/// That is what makes a replay idempotent: re-ingesting a block writes the same rows over the same keys
+/// instead of duplicating them. The column names and their order in the key must match `schema.sql`
+/// exactly; a mismatch here builds fine and produces a table nobody can upsert into.
+///
+/// Numeric columns are passed as decimal strings into `numeric(78,0)`. Going through any float on the
+/// way would round a uint256 silently, which is the one failure mode that never announces itself.
+#[substreams::handlers::map]
+pub fn db_out(events: lp::Events, positions: lp::PositionDeltas) -> Result<DatabaseChanges, Error> {
+    let mut tables = Tables::new();
+
+    // Row keys have to outlive the borrow, hence the explicit bindings before every create_row.
+    for e in events.manager_deployed {
+        let m = e.meta.unwrap_or_default();
+        let idx = m.log_index.to_string();
+        tables
+            .create_row(
+                "manager_deployed",
+                [
+                    ("transaction_hash", m.transaction_hash.as_str()),
+                    ("log_index", idx.as_str()),
+                ],
+            )
+            .set("block_number", m.block_number)
+            .set("block_timestamp", m.block_timestamp)
+            .set("manager", e.manager)
+            .set("implementation", e.implementation)
+            .set("oracle_type", e.oracle_type);
+    }
+
+    for e in events.manager_initialized {
+        let m = e.meta.unwrap_or_default();
+        let idx = m.log_index.to_string();
+        tables
+            .create_row(
+                "manager_initialized",
+                [
+                    ("transaction_hash", m.transaction_hash.as_str()),
+                    ("log_index", idx.as_str()),
+                ],
+            )
+            .set("block_number", m.block_number)
+            .set("block_timestamp", m.block_timestamp)
+            .set("manager", e.manager)
+            .set("owner", e.owner)
+            .set("pool_manager", e.pool_manager)
+            .set("pool_count", e.pool_count);
+    }
+
+    for e in events.operator_set {
+        let m = e.meta.unwrap_or_default();
+        let idx = m.log_index.to_string();
+        tables
+            .create_row(
+                "operator_set",
+                [
+                    ("transaction_hash", m.transaction_hash.as_str()),
+                    ("log_index", idx.as_str()),
+                ],
+            )
+            .set("block_number", m.block_number)
+            .set("block_timestamp", m.block_timestamp)
+            .set("manager", e.manager)
+            .set("operator", e.operator)
+            .set("allowed", e.allowed);
+    }
+
+    for e in events.price_oracle_set {
+        let m = e.meta.unwrap_or_default();
+        let idx = m.log_index.to_string();
+        tables
+            .create_row(
+                "price_oracle_set",
+                [
+                    ("transaction_hash", m.transaction_hash.as_str()),
+                    ("log_index", idx.as_str()),
+                ],
+            )
+            .set("block_number", m.block_number)
+            .set("block_timestamp", m.block_timestamp)
+            .set("manager", e.manager)
+            .set("oracle", e.oracle);
+    }
+
+    for e in events.allocated {
+        let m = e.meta.unwrap_or_default();
+        let idx = m.log_index.to_string();
+        tables
+            .create_row(
+                "allocated",
+                [
+                    ("transaction_hash", m.transaction_hash.as_str()),
+                    ("log_index", idx.as_str()),
+                ],
+            )
+            .set("block_number", m.block_number)
+            .set("block_timestamp", m.block_timestamp)
+            .set("manager", e.manager)
+            .set("legs", e.legs);
+    }
+
+    for e in events.recentered {
+        let m = e.meta.unwrap_or_default();
+        let idx = m.log_index.to_string();
+        tables
+            .create_row(
+                "recentered",
+                [
+                    ("transaction_hash", m.transaction_hash.as_str()),
+                    ("log_index", idx.as_str()),
+                ],
+            )
+            .set("block_number", m.block_number)
+            .set("block_timestamp", m.block_timestamp)
+            .set("manager", e.manager)
+            .set("salt", e.salt)
+            .set("new_tick_lower", e.new_tick_lower)
+            .set("new_tick_upper", e.new_tick_upper)
+            .set("liquidity", e.liquidity);
+    }
+
+    for e in events.liquidity_moved {
+        let m = e.meta.unwrap_or_default();
+        let idx = m.log_index.to_string();
+        tables
+            .create_row(
+                "liquidity_moved",
+                [
+                    ("transaction_hash", m.transaction_hash.as_str()),
+                    ("log_index", idx.as_str()),
+                ],
+            )
+            .set("block_number", m.block_number)
+            .set("block_timestamp", m.block_timestamp)
+            .set("manager", e.manager)
+            .set("from_salt", e.from_salt)
+            .set("to_salt", e.to_salt)
+            .set("liquidity_pulled", e.liquidity_pulled);
+    }
+
+    for e in events.fees_collected {
+        let m = e.meta.unwrap_or_default();
+        let idx = m.log_index.to_string();
+        tables
+            .create_row(
+                "fees_collected",
+                [
+                    ("transaction_hash", m.transaction_hash.as_str()),
+                    ("log_index", idx.as_str()),
+                ],
+            )
+            .set("block_number", m.block_number)
+            .set("block_timestamp", m.block_timestamp)
+            .set("manager", e.manager)
+            .set("salt", e.salt)
+            .set("fees0", e.fees0)
+            .set("fees1", e.fees1);
+    }
+
+    for e in events.reinvested {
+        let m = e.meta.unwrap_or_default();
+        let idx = m.log_index.to_string();
+        tables
+            .create_row(
+                "reinvested",
+                [
+                    ("transaction_hash", m.transaction_hash.as_str()),
+                    ("log_index", idx.as_str()),
+                ],
+            )
+            .set("block_number", m.block_number)
+            .set("block_timestamp", m.block_timestamp)
+            .set("manager", e.manager)
+            .set("salt", e.salt)
+            .set("added_liquidity", e.added_liquidity);
+    }
+
+    for e in events.withdrawn_to {
+        let m = e.meta.unwrap_or_default();
+        let idx = m.log_index.to_string();
+        tables
+            .create_row(
+                "withdrawn_to",
+                [
+                    ("transaction_hash", m.transaction_hash.as_str()),
+                    ("log_index", idx.as_str()),
+                ],
+            )
+            .set("block_number", m.block_number)
+            .set("block_timestamp", m.block_timestamp)
+            .set("manager", e.manager)
+            .set("recipient", e.recipient)
+            .set("currency", e.currency)
+            .set("amount", e.amount);
+    }
+
+    for e in events.protocol_fee_taken {
+        let m = e.meta.unwrap_or_default();
+        let idx = m.log_index.to_string();
+        tables
+            .create_row(
+                "protocol_fee_taken",
+                [
+                    ("transaction_hash", m.transaction_hash.as_str()),
+                    ("log_index", idx.as_str()),
+                ],
+            )
+            .set("block_number", m.block_number)
+            .set("block_timestamp", m.block_timestamp)
+            .set("manager", e.manager)
+            .set("currency", e.currency)
+            .set("amount", e.amount);
+    }
+
+    for d in positions.deltas {
+        let m = d.meta.unwrap_or_default();
+        let idx = m.log_index.to_string();
+        tables
+            .create_row(
+                "position_delta",
+                [
+                    ("transaction_hash", m.transaction_hash.as_str()),
+                    ("log_index", idx.as_str()),
+                ],
+            )
+            .set("block_number", m.block_number)
+            .set("block_timestamp", m.block_timestamp)
+            .set("emitter", m.emitter)
+            .set("manager", d.manager)
+            .set("pool_id", d.pool_id)
+            .set("salt", d.salt)
+            .set("tick_lower", d.tick_lower)
+            .set("tick_upper", d.tick_upper)
+            .set("liquidity_delta", d.liquidity_delta);
+    }
+
+    Ok(tables.to_database_changes())
 }

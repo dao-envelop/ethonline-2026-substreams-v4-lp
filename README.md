@@ -44,6 +44,7 @@ Here the filter is one map step against the registry.
 | `map_events` | map | The same events, minus anything emitted by a contract the factory did not produce. |
 | `map_positions` | map | `ModifyLiquidity` logs whose `sender` is a known manager: pool, range, signed liquidity delta, salt. |
 | `index_events` | blockIndex | Keys a consumer can filter blocks by: `evt:<name>` and `mgr:<address>`. |
+| `db_out` | map | `DatabaseChanges` for the Postgres sink — twelve tables, keyed by `(transaction_hash, log_index)`. |
 
 Every amount is a **decimal string of base units**. `uint256` fits no protobuf integer and a float would
 silently round — the same choice the existing Envelop history API made, for the same reason.
@@ -142,12 +143,42 @@ one that does not: Arbitrum alone is ~15.5M blocks of history and ~345k more per
 Not wired into this package's own modules yet: which query is right depends on what the consumer wants,
 and a hardcoded one would be wrong for everyone else.
 
+## SQL sink
+
+`schema.sql` in this repository is the schema — twelve tables, eleven event types plus `position_delta`.
+Row identity is `(transaction_hash, log_index)`, the log's position in the chain, which is what makes a
+replay idempotent: re-ingesting a block writes the same rows over the same keys rather than duplicating
+them. Amounts land in `numeric(78,0)`, passed as decimal strings, because anything narrower cannot hold a
+uint256 and any float rounds it silently.
+
+The sink ships inside the CLI; the standalone `substreams-sink-sql` binary is deprecated.
+
+```bash
+export SUBSTREAMS_SINK_DSN="postgres://user:pass@host:5432/db?sslmode=require"
+substreams sink postgres setup ./envelop-lp-v4-v0.1.0.spkg   # bookkeeping tables + schema.sql
+substreams sink postgres       ./envelop-lp-v4-v0.1.0.spkg   # runs; no `run` subcommand
+```
+
+`setup` creates its own `cursors` and `substreams_history` tables alongside ours — that is how it resumes
+and how it unwinds reorgs. Do not create them by hand and do not apply `schema.sql` yourself: `setup`
+does it, and it fails against objects that already exist.
+
+Note `postgresql://` is rejected as a DSN scheme even though `psql` accepts it. Use `postgres://` or
+`psql://`.
+
+Two things worth knowing before editing the manifest:
+
+- **Do not import the SQL protodefs package.** The sink `Service` type is already inside the CLI, and
+  importing it as well collides: *name conflict over `sf.substreams.sink.sql.v1.Service`*. Only the
+  `DatabaseChanges` protos are imported here.
+- **Changing `imports` invalidates the cache.** Module hashes cover the package's proto definitions, so
+  adding the import made a 338k-block store backfill run again from scratch. Cheap to discover, less
+  cheap to discover on a big chain.
+
 ## Not done yet
 
-- `db_out` (SQL sink) and `graph_out` (subgraph entities). They are different sink contracts —
-  `DatabaseChanges` and `EntityChanges` — and mixing them produces a pipeline that builds and emits
-  rubbish, so each gets its own module.
-- Running against a live endpoint. Needs a key from The Graph Market.
+- `graph_out` (subgraph entities). A different sink contract — `EntityChanges`, not `DatabaseChanges` —
+  and mixing the two produces a pipeline that builds and writes rubbish, so it gets its own module.
 
 ## License
 

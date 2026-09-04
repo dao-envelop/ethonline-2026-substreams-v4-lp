@@ -8,11 +8,21 @@ package:
 
 network: mainnet
 
+# The sink protos come from the official packages rather than being redefined here: the wire format is
+# the contract with the sink, and a hand-copied message that drifts by one field number produces a
+# pipeline that builds and writes rubbish.
+imports:
+  # Only the DatabaseChanges protos are imported. The sink Service type is already inside the substreams
+  # CLI (the SQL sink ships with it since v1.20), and importing the protodefs package as well makes the
+  # two definitions collide: "name conflict over sf.substreams.sink.sql.v1.Service".
+  database: https://github.com/streamingfast/substreams-sink-database-changes/releases/download/v4.0.0/substreams-sink-database-changes-v4.0.0.spkg
+
 protobuf:
   files:
     - envelop/lp/v1/lp.proto
   importPaths:
     - ./proto
+  excludePaths: [sf/substreams, google]
 
 binaries:
   default:
@@ -75,6 +85,24 @@ modules:
     output:
       type: proto:sf.substreams.index.v1.Keys
 
+  - name: db_out
+    kind: map
+    initialBlock: 25580292
+    inputs:
+      - map: map_events
+      - map: map_positions
+    output:
+      type: proto:sf.substreams.sink.database.v1.DatabaseChanges
+
+sink:
+  module: db_out
+  # sf.substreams.sink.sql.v1.Service is the deprecated spelling; this is the current one.
+  type: sf.substreams.sink.sql.service.v1.Service
+  config:
+    schema: ./schema.sql
+    # Inert for the CLI — the dialect comes from the DSN — but it is what a hosted deployment reads.
+    engine: postgres
+
 # Per-network overrides: same modules, different factory and different first block. `--network <name>`
 # selects one. Keeping this in the manifest rather than in five copies of it is the whole point — the
 # package is about a class of contracts, not about one deployment.
@@ -86,6 +114,7 @@ networks:
       map_events: 25580292
       map_positions: 25580292
       index_events: 25580292
+      db_out: 25580292
     params:
       map_raw_events: "0x75e5d72d6971221b6332aae8f59759d4ba366dd0"
   arbitrum-one:
@@ -95,6 +124,7 @@ networks:
       map_events: 486143228
       map_positions: 486143228
       index_events: 486143228
+      db_out: 486143228
     params:
       map_raw_events: "0x8a56c6be755ac385395e96234b553db1b9b06bea"
   base:
@@ -104,6 +134,7 @@ networks:
       map_events: 48918859
       map_positions: 48918859
       index_events: 48918859
+      db_out: 48918859
     params:
       map_raw_events: "0x7a3c8f45b809078da58d17fb6cd059334622838f"
   unichain:
@@ -113,5 +144,6 @@ networks:
       map_events: 53877933
       map_positions: 53877933
       index_events: 53877933
+      db_out: 53877933
     params:
       map_raw_events: "0x62d51dff0c264a5af8452a10789e4c98b7413a3c"
