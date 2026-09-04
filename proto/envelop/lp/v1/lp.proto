@@ -1,0 +1,162 @@
+syntax = "proto3";
+
+package envelop.lp.v1;
+
+// Where a record came from. Carried on every message rather than folded into the container, because a
+// single block holds records from many managers and many transactions, and a sink needs the anchor per
+// row — not per batch.
+message Meta {
+  uint64 block_number = 1;
+  int64 block_timestamp = 2; // unix seconds
+  string transaction_hash = 3; // 0x-prefixed
+  uint32 log_index = 4;
+  string emitter = 5; // contract that logged it, 0x-prefixed lowercase
+}
+
+// Every amount is a decimal string of base units. uint256 does not fit any protobuf integer, and a
+// float would silently round: the existing Envelop history API made the same choice for the same reason.
+
+// ─────────────────────────── manager lifecycle ───────────────────────────
+
+// LPManagerFactory.EnvelopV2Deployment — a manager clone was created. This is the only event that says
+// what product a given manager is, because EnvelopV2OracleType is emitted by the implementation's
+// constructor, not by the clone.
+message ManagerDeployed {
+  Meta meta = 1;
+  string manager = 2; // the clone (proxy)
+  string implementation = 3;
+  uint64 oracle_type = 4; // 3000 stable, 3001 volatile, 3002 open volatile
+}
+
+// BaseLPManager.Initialized — emitted by the clone itself, in the same transaction as the deployment.
+message ManagerInitialized {
+  Meta meta = 1;
+  string manager = 2;
+  string owner = 3;
+  string pool_manager = 4;
+  uint64 pool_count = 5;
+}
+
+// SingletonNFTOwned.OperatorSet — who may act on the manager. Also emitted with allowed=false for every
+// operator when the ownership NFT is transferred, so a fold must be ordered, not last-seen-wins by hand.
+message OperatorSet {
+  Meta meta = 1;
+  string manager = 2;
+  string operator = 3;
+  bool allowed = 4;
+}
+
+// BaseLPManager.PriceOracleSet — the oracle that gates operator swaps. Zero address means unset, and an
+// operator swap then fails closed.
+message PriceOracleSet {
+  Meta meta = 1;
+  string manager = 2;
+  string oracle = 3;
+}
+
+// ─────────────────────────── position operations ───────────────────────────
+
+// BaseLPManager.Allocated — carries only a leg count. The amounts and the salt→pool link are not in it;
+// they come from the v4 ModifyLiquidity logs of the same transaction (see PositionDelta).
+message Allocated {
+  Meta meta = 1;
+  string manager = 2;
+  uint64 legs = 3;
+}
+
+// VolatileLPManager.Recentered — a position moved to a new range inside the same pool.
+message Recentered {
+  Meta meta = 1;
+  string manager = 2;
+  string salt = 3;
+  int32 new_tick_lower = 4;
+  int32 new_tick_upper = 5;
+  string liquidity = 6; // absolute liquidity AFTER the move, not a delta
+}
+
+// VolatileLPManager.LiquidityMoved — a position moved to another pool (task_051). Introduced during
+// ETHOnline 2026; managers deployed before that implementation never emit it.
+message LiquidityMoved {
+  Meta meta = 1;
+  string manager = 2;
+  string from_salt = 3;
+  string to_salt = 4;
+  string liquidity_pulled = 5;
+}
+
+// V4PositionManager.FeesCollected — fees realised, gross, before the protocol skim. Emitted by the claim
+// path and, since task_051, by every pull as well: removing liquidity realises fees whether or not the
+// caller asked for them.
+message FeesCollected {
+  Meta meta = 1;
+  string manager = 2;
+  string salt = 3;
+  string fees0 = 4;
+  string fees1 = 5;
+}
+
+// BaseLPManager.Reinvested — realised fees compounded back in (stable product only).
+message Reinvested {
+  Meta meta = 1;
+  string manager = 2;
+  string salt = 3;
+  string added_liquidity = 4;
+}
+
+// BaseLPManager.WithdrawnTo — the owner-only drain. Keyed by recipient and currency, not by position.
+message WithdrawnTo {
+  Meta meta = 1;
+  string manager = 2;
+  string recipient = 3;
+  string currency = 4;
+  string amount = 5;
+}
+
+// BaseLPManager.ProtocolFeeTaken — the 10% skim, keyed by currency rather than by position.
+message ProtocolFeeTaken {
+  Meta meta = 1;
+  string manager = 2;
+  string currency = 3;
+  string amount = 4;
+}
+
+// ─────────────────────────── containers ───────────────────────────
+
+// One message type per event, as decoded from a block. Kept as parallel lists rather than a single
+// oneof list so a SQL sink can map each list to its own table without a match arm.
+message Events {
+  repeated ManagerDeployed manager_deployed = 1;
+  repeated ManagerInitialized manager_initialized = 2;
+  repeated OperatorSet operator_set = 3;
+  repeated PriceOracleSet price_oracle_set = 4;
+  repeated Allocated allocated = 5;
+  repeated Recentered recentered = 6;
+  repeated LiquidityMoved liquidity_moved = 7;
+  repeated FeesCollected fees_collected = 8;
+  repeated Reinvested reinvested = 9;
+  repeated WithdrawnTo withdrawn_to = 10;
+  repeated ProtocolFeeTaken protocol_fee_taken = 11;
+}
+
+// ─────────────────────────── positions ───────────────────────────
+
+// One Uniswap v4 ModifyLiquidity log made by a known manager — the only place where pool, range, exact
+// liquidity delta and salt appear together. Manager events cannot reconstruct a position on their own:
+// Allocated carries a leg count, no manager event carries amounts, and for the volatile product nothing
+// on chain links a salt to its pool.
+//
+// A recenter decomposes for free: the removal and the addition are two logs under one salt in one
+// transaction, so a negative row and a positive row fall out without special-casing.
+message PositionDelta {
+  Meta meta = 1;
+  string manager = 2; // the ModifyLiquidity `sender`
+  string pool_id = 3;
+  string salt = 4;
+  int32 tick_lower = 5;
+  int32 tick_upper = 6;
+  string liquidity_delta = 7; // int256 decimal string; negative on removal
+}
+
+message PositionDeltas {
+  repeated PositionDelta deltas = 1;
+}
