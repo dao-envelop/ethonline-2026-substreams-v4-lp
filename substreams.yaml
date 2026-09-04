@@ -4,12 +4,7 @@ package:
   name: envelop_lp_v4
   version: v0.1.0
   url: https://github.com/dao-envelop/ethonline-2026-substreams-v4-lp
-  doc: |
-    Typed events, operator changes and position deltas for the class "LP manager on top of Uniswap v4".
-
-    The manager registry is built from the factory's own deployment event, so the package works for any
-    manager that factory produced, on any chain it is deployed to. The factory address is the only
-    parameter — there is no address list to maintain.
+  description: Typed events, operators and position deltas for Uniswap v4 LP managers
 
 network: mainnet
 
@@ -71,3 +66,11 @@ modules:
         mode: get
     output:
       type: proto:envelop.lp.v1.PositionDeltas
+
+  - name: index_events
+    kind: blockIndex
+    initialBlock: 25580292
+    inputs:
+      - map: map_raw_events
+    output:
+      type: proto:sf.substreams.index.v1.Keys

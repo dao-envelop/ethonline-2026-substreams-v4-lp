@@ -8,8 +8,9 @@
 //!
 //! ```text
 //!   block ──▶ map_raw_events ──▶ store_managers ──▶ map_events      (manager events, emitter verified)
-//!                   │                    │
-//!                   └──▶ index_events     └──▶ map_positions        (v4 ModifyLiquidity by a manager)
+//!                   │                     │
+//!                   │                     └──▶ map_positions        (v4 ModifyLiquidity by a manager)
+//!                   └──▶ index_events                               (block filter keys, cost lever)
 //! ```
 
 mod abi;
@@ -25,6 +26,7 @@ mod pb {
 }
 
 use substreams::errors::Error;
+use substreams::pb::sf::substreams::index::v1::Keys;
 use substreams::store::{
     StoreGet, StoreGetString, StoreNew, StoreSetIfNotExists, StoreSetIfNotExistsString,
 };
@@ -179,7 +181,7 @@ pub fn map_raw_events(factory: String, block: eth::Block) -> Result<lp::Events, 
 #[substreams::handlers::store]
 pub fn store_managers(events: lp::Events, store: StoreSetIfNotExistsString) {
     for d in events.manager_deployed {
-        let ord = d.meta.as_ref().map(|m| m.block_number as i64).unwrap_or(0);
+        let ord = d.meta.as_ref().map(|m| m.block_number).unwrap_or(0);
         store.set_if_not_exists(ord, &d.manager, &d.oracle_type.to_string());
     }
 }
@@ -294,4 +296,60 @@ pub fn map_positions(
     }
 
     Ok(out)
+}
+
+// ─────────────────────────── 5. block index ───────────────────────────
+
+/// Keys a consumer can filter blocks by, so the engine skips blocks that cannot contain anything of
+/// ours. This is the largest cost lever the platform offers: billing is per block processed, and these
+/// managers are active in a tiny fraction of blocks — on a sub-second-block chain that is the difference
+/// between a backfill that fits a free tier and one that does not.
+///
+/// Two key families, both cheap to emit and precise enough to be worth filtering on:
+/// `mgr:<address>` for the contract that logged it, and `evt:<name>` for what happened.
+#[substreams::handlers::map]
+pub fn index_events(events: lp::Events) -> Result<Keys, Error> {
+    let mut keys: Vec<String> = Vec::new();
+    let mut push = |name: &str, manager: &str| {
+        keys.push(format!("evt:{name}"));
+        keys.push(format!("mgr:{manager}"));
+    };
+
+    for e in &events.manager_deployed {
+        push("manager_deployed", &e.manager);
+    }
+    for e in &events.manager_initialized {
+        push("manager_initialized", &e.manager);
+    }
+    for e in &events.operator_set {
+        push("operator_set", &e.manager);
+    }
+    for e in &events.price_oracle_set {
+        push("price_oracle_set", &e.manager);
+    }
+    for e in &events.allocated {
+        push("allocated", &e.manager);
+    }
+    for e in &events.recentered {
+        push("recentered", &e.manager);
+    }
+    for e in &events.liquidity_moved {
+        push("liquidity_moved", &e.manager);
+    }
+    for e in &events.fees_collected {
+        push("fees_collected", &e.manager);
+    }
+    for e in &events.reinvested {
+        push("reinvested", &e.manager);
+    }
+    for e in &events.withdrawn_to {
+        push("withdrawn_to", &e.manager);
+    }
+    for e in &events.protocol_fee_taken {
+        push("protocol_fee_taken", &e.manager);
+    }
+
+    keys.sort();
+    keys.dedup();
+    Ok(Keys { keys })
 }

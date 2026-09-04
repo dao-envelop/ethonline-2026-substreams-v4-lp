@@ -33,7 +33,8 @@ Here the filter is one map step against the registry.
 ```
   block ──▶ map_raw_events ──▶ store_managers ──▶ map_events      manager events, emitter verified
                   │                     │
-                  └───────────────────  └──▶ map_positions        v4 ModifyLiquidity made by a manager
+                  │                     └──▶ map_positions        v4 ModifyLiquidity made by a manager
+                  └──▶ index_events                               block-filter keys
 ```
 
 | Module | Kind | What it does |
@@ -42,6 +43,7 @@ Here the filter is one map step against the registry.
 | `store_managers` | store, `set_if_not_exists` | Manager address → product type (3000 stable, 3001 volatile, 3002 open volatile). A manager is deployed once and never changes product, so a second write would be a bug rather than an update. |
 | `map_events` | map | The same events, minus anything emitted by a contract the factory did not produce. |
 | `map_positions` | map | `ModifyLiquidity` logs whose `sender` is a known manager: pool, range, signed liquidity delta, salt. |
+| `index_events` | blockIndex | Keys a consumer can filter blocks by: `evt:<name>` and `mgr:<address>`. |
 
 Every amount is a **decimal string of base units**. `uint256` fits no protobuf integer and a float would
 silently round — the same choice the existing Envelop history API made, for the same reason.
@@ -73,6 +75,9 @@ substreams pack
 substreams run -e mainnet.eth.streamingfast.io:443 map_events -s 25580292 -t +1000
 ```
 
+Verified with `substreams` 1.22.0, `rustc` 1.98.1 and `protoc` 36.1: the package builds and packs with
+no warnings, and `substreams info` lists all five modules.
+
 Override the factory per network:
 
 ```bash
@@ -91,14 +96,36 @@ substreams run ... -p map_raw_events=0x8a56c6be755ac385395e96234b553db1b9b06bea 
 it too — a genesis pin turns every cold start into a full-chain backfill, because the store has to catch
 up from `initialBlock` each time.
 
+## Filtering blocks, and why it matters
+
+Billing is **per block processed**, and these managers are active in a tiny fraction of blocks. On a
+chain with sub-second blocks that is the difference between a backfill that fits inside a free tier and
+one that does not: Arbitrum alone is ~15.5M blocks of history and ~345k more per day.
+
+`index_events` emits two key families — `evt:<name>` and `mgr:<address>` — so a consumer can declare a
+`blockFilter` and have the engine skip everything else:
+
+```yaml
+  - name: my_consumer
+    kind: map
+    blockFilter:
+      module: index_events
+      query:
+        params: true
+    inputs:
+      - params: string
+      - map: map_events
+```
+
+Not wired into this package's own modules yet: which query is right depends on what the consumer wants,
+and a hardcoded one would be wrong for everyone else.
+
 ## Not done yet
 
 - `db_out` (SQL sink) and `graph_out` (subgraph entities). They are different sink contracts —
   `DatabaseChanges` and `EntityChanges` — and mixing them produces a pipeline that builds and emits
   rubbish, so each gets its own module.
-- A `blockIndex` module. Managers are active in a small fraction of blocks and billing is per block
-  processed, so this is the single biggest cost lever available. It lands once the toolchain is in place
-  and the manifest can be validated by `substreams pack` rather than by reading.
+- Running against a live endpoint. Needs a key from The Graph Market.
 
 ## License
 
