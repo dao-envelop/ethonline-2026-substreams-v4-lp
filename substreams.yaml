@@ -74,3 +74,44 @@ modules:
       - map: map_raw_events
     output:
       type: proto:sf.substreams.index.v1.Keys
+
+# Per-network overrides: same modules, different factory and different first block. `--network <name>`
+# selects one. Keeping this in the manifest rather than in five copies of it is the whole point — the
+# package is about a class of contracts, not about one deployment.
+networks:
+  mainnet:
+    initialBlock:
+      map_raw_events: 25580292
+      store_managers: 25580292
+      map_events: 25580292
+      map_positions: 25580292
+      index_events: 25580292
+    params:
+      map_raw_events: "0x75e5d72d6971221b6332aae8f59759d4ba366dd0"
+  arbitrum-one:
+    initialBlock:
+      map_raw_events: 486143228
+      store_managers: 486143228
+      map_events: 486143228
+      map_positions: 486143228
+      index_events: 486143228
+    params:
+      map_raw_events: "0x8a56c6be755ac385395e96234b553db1b9b06bea"
+  base:
+    initialBlock:
+      map_raw_events: 48918859
+      store_managers: 48918859
+      map_events: 48918859
+      map_positions: 48918859
+      index_events: 48918859
+    params:
+      map_raw_events: "0x7a3c8f45b809078da58d17fb6cd059334622838f"
+  unichain:
+    initialBlock:
+      map_raw_events: 53877933
+      store_managers: 53877933
+      map_events: 53877933
+      map_positions: 53877933
+      index_events: 53877933
+    params:
+      map_raw_events: "0x62d51dff0c264a5af8452a10789e4c98b7413a3c"

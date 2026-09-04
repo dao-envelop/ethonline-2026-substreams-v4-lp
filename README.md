@@ -78,10 +78,32 @@ substreams run -e mainnet.eth.streamingfast.io:443 map_events -s 25580292 -t +10
 Verified with `substreams` 1.22.0, `rustc` 1.98.1 and `protoc` 36.1: the package builds and packs with
 no warnings, and `substreams info` lists all five modules.
 
-Override the factory per network:
+### Verified against a live chain
+
+Run against Arbitrum One, and cross-checked against the Envelop history API — the production indexer this
+package is meant to eventually replace — on the same manager,
+[`0x60723973…264b`](https://arbiscan.io/address/0x60723973ABF3BBC2ce7EB4400B728390D55e264b):
+
+| What | Result |
+|---|---|
+| `map_raw_events` at block 487,466,603 | decoded the manager's `OperatorSet`: operator `0xd5228c94…`, `allowed: true` |
+| `map_positions` at block 486,482,005 | decoded the first position: pool `0x70bf44c3…`, salt `0x8cd1b9d4…`, range `[58920, 70920]`, liquidity `+717932` |
+
+Pool, salt and timestamp match the oracle's record of that position exactly, and the delta is positive
+because it is an open. The `emitter` is the v4 `PoolManager` while the `manager` is the `sender` — which
+is the whole reason positions are read from Uniswap's logs rather than the manager's own.
+
+Backfilling the store from the factory's first block to that point processed ~340k blocks. Results are
+cached, so later runs over the same range are free; the CLI also refuses to process more than 10,000
+blocks unless `--limit-processed-blocks` says otherwise, which is a useful guard against an accidental
+full-chain backfill.
+
+Switch networks with `--network`; the manifest carries the factory address and the first block for each,
+so there is one manifest rather than five copies of it:
 
 ```bash
-substreams run ... -p map_raw_events=0x8a56c6be755ac385395e96234b553db1b9b06bea   # arbitrum
+substreams run -e arb-one.streamingfast.io:443 --network arbitrum-one \
+  ./envelop-lp-v4-v0.1.0.spkg map_positions -s 486481990 -t +40
 ```
 
 | Chain | Factory | First block |
