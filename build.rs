@@ -15,5 +15,14 @@ fn main() {
             .unwrap_or_else(|e| panic!("write {out}: {e}"));
     }
 
-    prost_build::compile_protos(&["proto/envelop/lp/v1/lp.proto"], &["proto/"]).unwrap();
+    prost_build::compile_protos(
+        &[
+            "proto/envelop/lp/v1/lp.proto",
+            // Entity changes for graph_out. Generated here rather than taken from the
+            // `substreams-entity-change` crate — see the header of that file for why.
+            "proto/sf/substreams/sink/entity/v1/entity.proto",
+        ],
+        &["proto/"],
+    )
+    .unwrap();
 }

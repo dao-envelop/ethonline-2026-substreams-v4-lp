@@ -1,0 +1,58 @@
+syntax = "proto3";
+
+// Copied verbatim from streamingfast/substreams-sink-entity-changes (v1.3.2), field numbers included.
+//
+// Why a copy rather than the `substreams-entity-change` crate: that crate (2.0.0, the current release)
+// depends on `substreams` 0.6, while this package is on 0.7. Both end up linked, its `ToValue` impls are
+// written against the other crate's `BigInt`, and with `lto = true` the build fails outright — "failed
+// to load bitcode of module substreams-...". So the wire types are generated here and the few setters we
+// need live in `src/lib.rs`.
+//
+// The copy is for the Rust bindings only: `substreams.yaml` excludes `sf/substreams` from the packaged
+// protos and imports the official `.spkg` instead, so the package descriptor a consumer reads is the
+// canonical one, not ours. If these two ever disagree, the manifest wins and this file is the bug.
+package sf.substreams.sink.entity.v1;
+
+message EntityChanges {
+  repeated EntityChange entity_changes = 5;
+}
+
+message EntityChange {
+  string entity = 1;
+  string id = 2;
+  uint64 ordinal = 3; // deprecated upstream: not read by graph-node
+  Operation operation = 4;
+  repeated Field fields = 5;
+
+  enum Operation {
+    OPERATION_UNSPECIFIED = 0;
+    OPERATION_CREATE = 1;
+    OPERATION_UPDATE = 2;
+    OPERATION_DELETE = 3;
+    OPERATION_FINAL = 4;
+  }
+}
+
+message Value {
+  oneof typed {
+    int32 int32 = 1;
+    string bigdecimal = 2;
+    string bigint = 3;
+    string string = 4;
+    string bytes = 5; // hex, 0x-prefixed — a string on the wire despite the name
+    bool bool = 6;
+    int64 timestamp = 7;
+    // 8 and 9 reserved upstream for future types
+    Array array = 10;
+  }
+}
+
+message Array {
+  repeated Value value = 1;
+}
+
+message Field {
+  string name = 1;
+  Value new_value = 3;
+  optional Value old_value = 5; // deprecated upstream: not read by graph-node
+}

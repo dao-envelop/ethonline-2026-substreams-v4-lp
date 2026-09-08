@@ -45,6 +45,9 @@ Here the filter is one map step against the registry.
 | `map_positions` | map | `ModifyLiquidity` logs whose `sender` is a known manager: pool, range, signed liquidity delta, salt. |
 | `index_events` | blockIndex | Keys a consumer can filter blocks by: `evt:<name>` and `mgr:<address>`. |
 | `db_out` | map | `DatabaseChanges` for the Postgres sink — twelve tables, keyed by `(transaction_hash, log_index)`. |
+| `store_position_totals` | store, `add` | Signed running liquidity per position plus its two fee counters, so a subgraph query does not fold every delta itself. |
+| `store_position_open` | store, `set_if_not_exists` | Where and when a position began. The first `ModifyLiquidity` under a salt wins, so "opened at" survives every recenter without a special case. |
+| `graph_out` | map | `EntityChanges` for a Substreams-powered subgraph — the model in [`schema.graphql`](./schema.graphql). |
 
 Every amount is a **decimal string of base units**. `uint256` fits no protobuf integer and a float would
 silently round — the same choice the existing Envelop history API made, for the same reason.
@@ -63,6 +66,48 @@ silently round — the same choice the existing Envelop history API made, for th
 | `FeesCollected` | manager | Gross, before the protocol skim. Emitted by the claim path and, since the same change, by **every** pull — removing liquidity realises fees whether or not the caller asked. |
 | `Reinvested`, `WithdrawnTo`, `ProtocolFeeTaken` | manager | |
 | `ModifyLiquidity` | Uniswap v4 `PoolManager` | The position model. |
+
+## Two sinks, one decoder
+
+The same modules feed two Graph products, which is the point rather than a convenience:
+
+* **`db_out` → Postgres**, through `substreams-sink-sql`. Eleven event tables plus `position_delta`,
+  matching the schema Envelop's existing indexer already serves in production, so rows from the two can
+  be compared one against the other.
+* **`graph_out` → a Substreams-powered subgraph**, deployed from [`subgraph.yaml`](./subgraph.yaml)
+  against [`schema.graphql`](./schema.graphql).
+
+The subgraph is deliberately **not** the SQL shape. A table dump is what a sink wants; a subgraph is
+queried by people and by agents, so it gets a model: `Manager`, `Operator` (the current answer to "who
+may act", already folded, because transferring the manager NFT revokes every operator at once),
+`Position` with running liquidity and lifetime fees, an immutable `PositionDelta`, and one
+`ManagerEvent` timeline covering all eleven event types.
+
+Two decisions inside `graph_out` are worth knowing:
+
+* **A manager is created once.** `EnvelopV2Deployment` and the clone's `Initialized` are two events in
+  one transaction, and they are merged into a single entity change rather than a create followed by an
+  update that would have to race it. `PriceOracleSet` can arrive months later, so that one is an update.
+* **`openedAtBlock` comes from a store, not from the delta being processed.** For every log after the
+  first, the current block is when the position *moved*, not when it began.
+
+The entity types are generated from a local copy of the upstream proto
+([`proto/sf/substreams/sink/entity/v1/entity.proto`](./proto/sf/substreams/sink/entity/v1/entity.proto)),
+not from the `substreams-entity-change` crate: that crate's current release is built against
+`substreams` 0.6 while this package is on 0.7, and linking both under `lto = true` fails to build at all.
+The manifest still **imports the official `.spkg`**, so the descriptor a consumer reads is the canonical
+one — the local copy exists only so Rust has types.
+
+### Deploying the subgraph
+
+```bash
+substreams pack                  # refresh the .spkg the datasource points at
+graph auth <deploy key>          # from Subgraph Studio
+graph deploy <subgraph slug>
+```
+
+One deployment per chain: `network:` in `subgraph.yaml` and the factory parameter in `substreams.yaml`
+change together.
 
 ## Building
 
@@ -94,6 +139,19 @@ Pool, salt and timestamp match the oracle's record of that position exactly, and
 because it is an open. The `emitter` is the v4 `PoolManager` while the `manager` is the `sender` — which
 is the whole reason positions are read from Uniswap's logs rather than the manager's own.
 
+`graph_out` was checked the same way, on Unichain — the chain this package indexes from the head
+alongside mainnet, while Arbitrum stays on the Envelop oracle because a block quota and 0.25-second
+blocks are bad arithmetic:
+
+| Block | Emitted |
+|---:|---|
+| 54,551,071 | `Manager` `0x9f7e19b7…` — deployment and `Initialized` merged into one entity: product `stable`, owner, pool manager, pool count — plus two `ManagerEvent` rows |
+| 54,572,737 | first allocate: `Position` (range `[-89, 111]`, liquidity from the store), its `PositionDelta`, and a `ManagerEvent` of kind `allocated` |
+
+Both runs started at the package's own `initialBlock` for that chain rather than mid-history, so the
+stores needed no hosted backfill beyond the 21.7k blocks between the two events — 63k processed blocks
+in total for the second one.
+
 Backfilling the store from the factory's first block to that point processed ~340k blocks. Results are
 cached, so later runs over the same range are free; the CLI also refuses to process more than 10,000
 blocks unless `--limit-processed-blocks` says otherwise, which is a useful guard against an accidental
@@ -104,7 +162,7 @@ so there is one manifest rather than five copies of it:
 
 ```bash
 substreams run -e arb-one.streamingfast.io:443 --network arbitrum-one \
-  ./envelop-lp-v4-v0.1.0.spkg map_positions -s 486481990 -t +40
+  ./envelop-lp-v4-v0.2.0.spkg map_positions -s 486481990 -t +40
 ```
 
 | Chain | Factory | First block |
@@ -155,8 +213,8 @@ The sink ships inside the CLI; the standalone `substreams-sink-sql` binary is de
 
 ```bash
 export SUBSTREAMS_SINK_DSN="postgres://user:pass@host:5432/db?sslmode=require"
-substreams sink postgres setup ./envelop-lp-v4-v0.1.0.spkg   # bookkeeping tables + schema.sql
-substreams sink postgres       ./envelop-lp-v4-v0.1.0.spkg   # runs; no `run` subcommand
+substreams sink postgres setup ./envelop-lp-v4-v0.2.0.spkg   # bookkeeping tables + schema.sql
+substreams sink postgres       ./envelop-lp-v4-v0.2.0.spkg   # runs; no `run` subcommand
 ```
 
 `setup` creates its own `cursors` and `substreams_history` tables alongside ours — that is how it resumes

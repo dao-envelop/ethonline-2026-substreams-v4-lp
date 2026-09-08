@@ -14,6 +14,7 @@
 //! ```
 
 mod abi;
+mod entity;
 
 mod pb {
     pub mod envelop {
@@ -23,15 +24,23 @@ mod pb {
             }
         }
     }
+    pub mod entity {
+        include!(concat!(env!("OUT_DIR"), "/sf.substreams.sink.entity.v1.rs"));
+    }
 }
 
 use substreams::errors::Error;
 use substreams_database_change::pb::sf::substreams::sink::database::v1::DatabaseChanges;
 use substreams_database_change::tables::Tables;
 use substreams::pb::sf::substreams::index::v1::Keys;
+use std::str::FromStr;
+use substreams::scalar::BigInt;
 use substreams::store::{
-    StoreGet, StoreGetString, StoreNew, StoreSetIfNotExists, StoreSetIfNotExistsString,
+    StoreAdd, StoreAddBigInt, StoreGet, StoreGetBigInt, StoreGetString, StoreNew, StoreSetIfNotExists,
+    StoreSetIfNotExistsString,
 };
+use entity::{Row as _, Tables as EntityTables};
+use pb::entity::EntityChanges;
 use substreams::Hex;
 use substreams_ethereum::pb::eth::v2 as eth;
 use substreams_ethereum::Event;
@@ -597,4 +606,260 @@ pub fn db_out(events: lp::Events, positions: lp::PositionDeltas) -> Result<Datab
     }
 
     Ok(tables.to_database_changes())
+}
+
+// ─────────────────────────── 7. the subgraph side ───────────────────────────
+
+/// A decimal string from the protobuf, as a number. These strings are produced by our own decoder from
+/// on-chain integers, so a parse failure is a bug rather than bad input — but a panic here would stop a
+/// backfill dead, and a zero is visible in the totals it lands in.
+fn number(s: &str) -> BigInt {
+    BigInt::from_str(s).unwrap_or_else(|_| BigInt::zero())
+}
+
+/// The key both position stores agree on. Salt is unique per manager, not globally.
+fn position_key(manager: &str, salt: &str) -> String {
+    format!("{manager}:{salt}")
+}
+
+/// What a manager holds right now, per position, so a subgraph query does not have to fold the deltas
+/// itself. Liquidity is a signed running sum — removals are negative rows — and the two fee counters
+/// accumulate what every pull and claim realised.
+///
+/// Read in the same block it is written: a store input in `get` mode sees this block's writes, which is
+/// why `graph_out` can report the total *including* the delta it is currently emitting.
+#[substreams::handlers::store]
+pub fn store_position_totals(events: lp::Events, positions: lp::PositionDeltas, store: StoreAddBigInt) {
+    for d in &positions.deltas {
+        store.add(0, format!("liq:{}", position_key(&d.manager, &d.salt)), number(&d.liquidity_delta));
+    }
+    for e in &events.fees_collected {
+        let key = position_key(&e.manager, &e.salt);
+        store.add(0, format!("fee0:{key}"), number(&e.fees0));
+        store.add(0, format!("fee1:{key}"), number(&e.fees1));
+    }
+}
+
+/// When a position was first seen, and in which pool. `set_if_not_exists` is the whole mechanism: the
+/// first `ModifyLiquidity` under a salt wins and later ones cannot overwrite it, so "opened at" survives
+/// every recenter without a special case.
+///
+/// The pool travels in the same value because a salt outlives its pool only through `moveLiquidity`, and
+/// that case is better answered by the deltas themselves than by a store that would have to be mutable.
+#[substreams::handlers::store]
+pub fn store_position_open(positions: lp::PositionDeltas, store: StoreSetIfNotExistsString) {
+    for d in &positions.deltas {
+        let m = d.meta.clone().unwrap_or_default();
+        store.set_if_not_exists(
+            0,
+            position_key(&d.manager, &d.salt),
+            &format!("{}:{}:{}", m.block_number, m.block_timestamp, d.pool_id),
+        );
+    }
+}
+
+fn product_of(oracle_type: u64) -> &'static str {
+    match oracle_type {
+        3000 => "stable",
+        3001 => "volatile",
+        3002 => "openVolatile",
+        _ => "unknown",
+    }
+}
+
+/// Entities for a Substreams-powered subgraph — the second Graph product this package feeds, next to the
+/// SQL sink, from the same modules.
+///
+/// The shape is deliberately not the SQL one. Postgres gets eleven event tables plus `position_delta`,
+/// because that schema already exists in production and rows there are compared against it. A subgraph
+/// is queried by people and agents, so it gets a small model instead: `Manager`, `Operator`, `Position`
+/// with running totals, an immutable `PositionDelta`, and one `ManagerEvent` timeline covering every
+/// event type — which is the query the frontend and the MCP service actually ask.
+///
+/// Manager is created once, from the deployment. `Initialized` is emitted by the clone in the same
+/// transaction, so its fields are folded into that same create rather than an update that would race it;
+/// `PriceOracleSet` can arrive much later and is therefore an update.
+#[substreams::handlers::map]
+pub fn graph_out(
+    events: lp::Events,
+    positions: lp::PositionDeltas,
+    totals: StoreGetBigInt,
+    opened: StoreGetString,
+) -> Result<EntityChanges, Error> {
+    let mut tables = EntityTables::new();
+
+    let event_row = |tables: &mut EntityTables, m: &lp::Meta, manager: &str, kind: &str| -> String {
+        let id = format!("{}-{}", m.transaction_hash, m.log_index);
+        tables
+            .create_row("ManagerEvent", &id)
+            .set("manager", manager)
+            .set("kind", kind)
+            .set_bigint("block", &m.block_number.to_string())
+            .set_bigint("timestamp", &m.block_timestamp.to_string())
+            .set_bytes("transaction", &m.transaction_hash)
+            .set("logIndex", m.log_index as i32);
+        id
+    };
+
+    for e in &events.manager_deployed {
+        let m = e.meta.clone().unwrap_or_default();
+        let init = events.manager_initialized.iter().find(|i| i.manager == e.manager);
+        let row = tables
+            .create_row("Manager", &e.manager)
+            .set_bytes("address", &e.manager)
+            .set_bytes("implementation", &e.implementation)
+            .set("product", product_of(e.oracle_type))
+            .set("oracleType", e.oracle_type as i32)
+            .set_bigint("createdAtBlock", &m.block_number.to_string())
+            .set_bigint("createdAtTimestamp", &m.block_timestamp.to_string());
+        if let Some(i) = init {
+            row.set_bytes("owner", &i.owner)
+                .set_bytes("poolManager", &i.pool_manager)
+                .set("poolCount", i.pool_count as i32);
+        }
+        event_row(&mut tables, &m, &e.manager, "deployed");
+    }
+
+    for e in &events.manager_initialized {
+        let m = e.meta.clone().unwrap_or_default();
+        event_row(&mut tables, &m, &e.manager, "initialized");
+    }
+
+    for e in &events.operator_set {
+        let m = e.meta.clone().unwrap_or_default();
+        // One row per (manager, operator), rewritten on every change: an NFT transfer revokes every
+        // operator in one block, and the fold that produces "who may act now" is the entity itself.
+        tables
+            .create_row("Operator", format!("{}-{}", e.manager, e.operator))
+            .set("manager", e.manager.clone())
+            .set_bytes("address", &e.operator)
+            .set("authorized", e.allowed)
+            .set_bigint("updatedAtBlock", &m.block_number.to_string())
+            .set_bigint("updatedAtTimestamp", &m.block_timestamp.to_string());
+        event_row(&mut tables, &m, &e.manager, "operatorSet");
+    }
+
+    for e in &events.price_oracle_set {
+        let m = e.meta.clone().unwrap_or_default();
+        tables.update_row("Manager", &e.manager).set_bytes("priceOracle", &e.oracle);
+        event_row(&mut tables, &m, &e.manager, "priceOracleSet");
+    }
+
+    for e in &events.allocated {
+        let m = e.meta.clone().unwrap_or_default();
+        let id = event_row(&mut tables, &m, &e.manager, "allocated");
+        tables.update_row("ManagerEvent", &id).set("legs", e.legs as i32);
+    }
+
+    for e in &events.recentered {
+        let m = e.meta.clone().unwrap_or_default();
+        let id = event_row(&mut tables, &m, &e.manager, "recentered");
+        tables
+            .update_row("ManagerEvent", &id)
+            .set("position", format!("{}-{}", e.manager, e.salt))
+            .set_bytes("salt", &e.salt)
+            .set("tickLower", e.new_tick_lower)
+            .set("tickUpper", e.new_tick_upper)
+            .set_bigint_or_zero("liquidity", &e.liquidity);
+    }
+
+    for e in &events.liquidity_moved {
+        let m = e.meta.clone().unwrap_or_default();
+        let id = event_row(&mut tables, &m, &e.manager, "liquidityMoved");
+        tables
+            .update_row("ManagerEvent", &id)
+            .set("position", format!("{}-{}", e.manager, e.from_salt))
+            .set_bytes("salt", &e.from_salt)
+            .set_bytes("toSalt", &e.to_salt)
+            .set_bigint_or_zero("liquidity", &e.liquidity_pulled);
+    }
+
+    for e in &events.fees_collected {
+        let m = e.meta.clone().unwrap_or_default();
+        let id = event_row(&mut tables, &m, &e.manager, "feesCollected");
+        tables
+            .update_row("ManagerEvent", &id)
+            .set("position", format!("{}-{}", e.manager, e.salt))
+            .set_bytes("salt", &e.salt)
+            .set_bigint_or_zero("amount0", &e.fees0)
+            .set_bigint_or_zero("amount1", &e.fees1);
+    }
+
+    for e in &events.reinvested {
+        let m = e.meta.clone().unwrap_or_default();
+        let id = event_row(&mut tables, &m, &e.manager, "reinvested");
+        tables
+            .update_row("ManagerEvent", &id)
+            .set("position", format!("{}-{}", e.manager, e.salt))
+            .set_bytes("salt", &e.salt)
+            .set_bigint_or_zero("liquidity", &e.added_liquidity);
+    }
+
+    for e in &events.withdrawn_to {
+        let m = e.meta.clone().unwrap_or_default();
+        let id = event_row(&mut tables, &m, &e.manager, "withdrawnTo");
+        tables
+            .update_row("ManagerEvent", &id)
+            .set_bytes("recipient", &e.recipient)
+            .set_bytes("currency", &e.currency)
+            .set_bigint_or_zero("amount0", &e.amount);
+    }
+
+    for e in &events.protocol_fee_taken {
+        let m = e.meta.clone().unwrap_or_default();
+        let id = event_row(&mut tables, &m, &e.manager, "protocolFeeTaken");
+        tables
+            .update_row("ManagerEvent", &id)
+            .set_bytes("currency", &e.currency)
+            .set_bigint_or_zero("amount0", &e.amount);
+    }
+
+    for d in &positions.deltas {
+        let m = d.meta.clone().unwrap_or_default();
+        let key = position_key(&d.manager, &d.salt);
+        let id = format!("{}-{}", d.manager, d.salt);
+
+        // Opened-at comes from the store rather than from this delta: for every log after the first, this
+        // block is when the position moved, not when it began.
+        let (opened_block, opened_time) = match opened.get_last(&key) {
+            Some(v) => {
+                let mut parts = v.split(':');
+                (
+                    parts.next().and_then(|x| x.parse::<u64>().ok()).unwrap_or(m.block_number),
+                    parts.next().and_then(|x| x.parse::<i64>().ok()).unwrap_or(m.block_timestamp),
+                )
+            }
+            None => (m.block_number, m.block_timestamp),
+        };
+
+        tables
+            .create_row("Position", &id)
+            .set("manager", d.manager.clone())
+            .set_bytes("salt", &d.salt)
+            .set_bytes("pool", &d.pool_id)
+            .set("tickLower", d.tick_lower)
+            .set("tickUpper", d.tick_upper)
+            .set_bigint("liquidity", &totals.get_last(format!("liq:{key}")).unwrap_or_else(BigInt::zero).to_string())
+            .set_bigint("lifetimeFees0", &totals.get_last(format!("fee0:{key}")).unwrap_or_else(BigInt::zero).to_string())
+            .set_bigint("lifetimeFees1", &totals.get_last(format!("fee1:{key}")).unwrap_or_else(BigInt::zero).to_string())
+            .set_bigint("openedAtBlock", &opened_block.to_string())
+            .set_bigint("openedAtTimestamp", &opened_time.to_string())
+            .set_bigint("updatedAtBlock", &m.block_number.to_string())
+            .set_bigint("updatedAtTimestamp", &m.block_timestamp.to_string());
+
+        tables
+            .create_row("PositionDelta", format!("{}-{}", m.transaction_hash, m.log_index))
+            .set("position", id)
+            .set("manager", d.manager.clone())
+            .set_bytes("pool", &d.pool_id)
+            .set("tickLower", d.tick_lower)
+            .set("tickUpper", d.tick_upper)
+            .set_bigint_or_zero("liquidityDelta", &d.liquidity_delta)
+            .set_bigint("block", &m.block_number.to_string())
+            .set_bigint("timestamp", &m.block_timestamp.to_string())
+            .set_bytes("transaction", &m.transaction_hash)
+            .set("logIndex", m.log_index as i32);
+    }
+
+    Ok(tables.to_entity_changes())
 }

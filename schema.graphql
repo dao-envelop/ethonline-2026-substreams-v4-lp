@@ -1,0 +1,126 @@
+# Entities for the Substreams-powered subgraph fed by `graph_out`.
+#
+# Deliberately not the SQL shape. The Postgres sink writes eleven event tables plus `position_delta`,
+# because that schema already exists in production and its rows are compared against it row by row. A
+# subgraph is queried by people and agents instead, so it gets a model: managers, who may operate them,
+# positions with running totals, and one timeline of everything a manager ever did.
+#
+# Addresses, hashes and salts are `Bytes` and arrive 0x-prefixed and lowercase. Amounts, liquidity and
+# block numbers are `BigInt`: uint256 fits nothing narrower, and a float would round silently.
+
+"An LP manager clone produced by LPManagerFactory. Created once, from its deployment event."
+type Manager @entity {
+  "The manager (proxy) address."
+  id: ID!
+  address: Bytes!
+  "Implementation the clone points at. Clones are never migrated, so this is fixed for its lifetime."
+  implementation: Bytes!
+  "stable (3000), volatile (3001) or openVolatile (3002)."
+  product: String!
+  oracleType: Int!
+  createdAtBlock: BigInt!
+  createdAtTimestamp: BigInt!
+  "Owner at creation — the holder of the manager NFT, who alone can withdraw. Not tracked on transfer."
+  owner: Bytes
+  poolManager: Bytes
+  poolCount: Int
+  "Oracle gating operator swaps. Null means unset, and an operator swap then fails closed."
+  priceOracle: Bytes
+  operators: [Operator!]! @derivedFrom(field: "manager")
+  positions: [Position!]! @derivedFrom(field: "manager")
+  events: [ManagerEvent!]! @derivedFrom(field: "manager")
+}
+
+"""
+An address authorised to rebalance a manager's positions. It can never withdraw — that boundary is
+enforced by the contract. One row per (manager, operator), rewritten on every change, so `authorized`
+is the current answer rather than something a consumer has to fold: transferring the manager NFT
+revokes every operator in a single block, and those revocations land here as ordinary updates.
+"""
+type Operator @entity {
+  "manager-operator"
+  id: ID!
+  manager: Manager!
+  address: Bytes!
+  authorized: Boolean!
+  updatedAtBlock: BigInt!
+  updatedAtTimestamp: BigInt!
+}
+
+"""
+A position, keyed by the salt its manager chose. Built from Uniswap's own `ModifyLiquidity` logs, not
+from manager events: `Allocated` carries only a leg count, no manager event carries amounts, and for the
+volatile product nothing on chain links a salt to its pool.
+"""
+type Position @entity {
+  "manager-salt"
+  id: ID!
+  manager: Manager!
+  salt: Bytes!
+  "Pool as of the latest delta. A move to another pool changes it; the deltas keep the history."
+  pool: Bytes!
+  tickLower: Int!
+  tickUpper: Int!
+  "Signed running total over every delta. Zero means the position is closed, not that it never existed."
+  liquidity: BigInt!
+  "Fees realised over the position's life, gross of the protocol skim. Every pull realises fees, not only an explicit claim."
+  lifetimeFees0: BigInt!
+  lifetimeFees1: BigInt!
+  "First `ModifyLiquidity` under this salt — unchanged by later recenters."
+  openedAtBlock: BigInt!
+  openedAtTimestamp: BigInt!
+  updatedAtBlock: BigInt!
+  updatedAtTimestamp: BigInt!
+  deltas: [PositionDelta!]! @derivedFrom(field: "position")
+}
+
+"""
+One `ModifyLiquidity` log made by a manager: pool, range, exact signed liquidity delta and salt in one
+place. A recenter decomposes for free — the removal and the addition are two logs under one salt in one
+transaction, so they arrive as a negative row and a positive row with no special case.
+"""
+type PositionDelta @entity(immutable: true) {
+  "transactionHash-logIndex"
+  id: ID!
+  position: Position!
+  manager: Manager!
+  pool: Bytes!
+  tickLower: Int!
+  tickUpper: Int!
+  liquidityDelta: BigInt!
+  block: BigInt!
+  timestamp: BigInt!
+  transaction: Bytes!
+  logIndex: Int!
+}
+
+"""
+Everything a manager did, as one ordered timeline: deployed, initialized, operatorSet, priceOracleSet,
+allocated, recentered, liquidityMoved, feesCollected, reinvested, withdrawnTo, protocolFeeTaken.
+
+The optional fields are the ones that event carries — `amount0`/`amount1` are fees for feesCollected and
+the single amount for withdrawnTo and protocolFeeTaken. Ordering is by (block, logIndex): a recenter
+shares a block *and* a timestamp with the fees it realises, so a timestamp alone does not order them.
+"""
+type ManagerEvent @entity(immutable: true) {
+  "transactionHash-logIndex"
+  id: ID!
+  manager: Manager!
+  kind: String!
+  block: BigInt!
+  timestamp: BigInt!
+  transaction: Bytes!
+  logIndex: Int!
+  position: Position
+  salt: Bytes
+  "Destination salt of a cross-pool move."
+  toSalt: Bytes
+  tickLower: Int
+  tickUpper: Int
+  liquidity: BigInt
+  amount0: BigInt
+  amount1: BigInt
+  legs: Int
+  recipient: Bytes
+  currency: Bytes
+}

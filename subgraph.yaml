@@ -1,0 +1,29 @@
+# Substreams-powered subgraph: graph-node consumes the `graph_out` module of the same package the SQL
+# sink reads, so the subgraph and the Postgres index are two products of one decoder rather than two
+# implementations that can drift.
+#
+# Deploy (Subgraph Studio):
+#   substreams pack                          # refresh the .spkg the datasource points at
+#   graph auth <deploy key>
+#   graph deploy <subgraph slug>
+#
+# The start block is the package's own initialBlock for the selected network — the factory's first block,
+# which is also the earliest a manager can exist.
+specVersion: 1.0.0
+description: Managers, operators and positions of Envelop LP managers on Uniswap v4
+repository: https://github.com/dao-envelop/ethonline-2026-substreams-v4-lp
+schema:
+  file: ./schema.graphql
+dataSources:
+  - kind: substreams
+    name: envelop_lp_v4
+    # One network per deployment: the package covers mainnet, unichain, base and arbitrum-one, but a
+    # subgraph is deployed per chain. Change this and the params in substreams.yaml together.
+    network: unichain
+    source:
+      package:
+        moduleName: graph_out
+        file: ./envelop-lp-v4-v0.2.0.spkg
+    mapping:
+      apiVersion: 0.0.7
+      kind: substreams/graph-entities
