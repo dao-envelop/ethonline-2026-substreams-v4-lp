@@ -217,11 +217,8 @@ networks:
   #
   # The store backfills from initialBlock before a single row is written, and a start flag does not
   # change that — so where a chain is indexed from is decided here. On this chain the factory is 4.2M
-  # one-second blocks behind the head, and the filter above does not make that free: measured on a
-  # running sink it processes ~15% of the blocks in scope, not the ~2% a single-stage `substreams run`
-  # suggests (the sink counts both stages, and 1000-block segments are pulled in whole by one
-  # interesting block). That puts this chain's full history at ~1.27M processed blocks — more than half
-  # of a free tier's monthly quota, spent on history the Envelop oracle already serves.
+  # one-second blocks behind the head, against a free tier of 7M blocks a month, and everything behind
+  # that point is already served by the Envelop oracle — which is what lp-insight's cascade is for.
   #
   # So: 58,125,000, just under the manager created on 2026-09-08 for the demo. Older managers on this
   # chain answer from the oracle through lp-insight's cascade, which is what the cascade is for.

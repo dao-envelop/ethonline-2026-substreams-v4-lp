@@ -213,14 +213,16 @@ catch up from `initialBlock` behind it, and those blocks are billed. Where a cha
 manifest decision, not a command-line one.
 
 **Mainnet is indexed from its factory block; Unichain is not.** The factory there is 4.2M one-second
-blocks behind the head, and the filter does not make that free. Measured on a running sink it processes
-**~15% of the blocks in scope** — not the ~2% a single-stage `substreams run` suggests, because the sink
-counts both stages and a 1000-block segment is pulled in whole by one interesting block. Unichain's full
-history is therefore ~1.27M processed blocks, over half of a free tier's monthly quota, spent on history
-the Envelop oracle already serves. So that chain is indexed from a recent block and older managers are
-answered from the oracle.
+blocks behind the head, against a free tier of 7M blocks a month, and everything behind that point is
+already served by the Envelop oracle — so Unichain starts at a recent block and older managers are
+answered from the oracle instead.
 
-Take the 15% figure, not the 2% one, when estimating any backfill here.
+**Read the price from the provider, not from the sink's log.** `progress_total_processed_blocks` counts
+the width of the ranges the sink's jobs walked, *before* the block index is applied; reading it as a
+bill overstates the cost by about an order of magnitude. Measured across the completed mainnet backfill:
+the log said 162,498 blocks, while the portal's billed counter moved by **2,316** — the same 1-2% a
+single run reports. The whole of mainnet's history from its factory block cost about two thousand billed
+blocks.
 
 ## Filtering blocks, and why it matters
 
