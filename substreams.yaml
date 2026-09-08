@@ -2,7 +2,7 @@ specVersion: v0.1.0
 
 package:
   name: envelop_lp_v4
-  version: v0.2.2
+  version: v0.2.3
   url: https://github.com/dao-envelop/ethonline-2026-substreams-v4-lp
   description: Typed events, operators and position deltas for Uniswap v4 LP managers
 
@@ -213,23 +213,22 @@ networks:
       graph_out: 48918859
     params:
       map_raw_events: "0x7a3c8f45b809078da58d17fb6cd059334622838f"
-  # Unichain is indexed from a recent block, not from the factory's. The gap between the factory
-  # (53,877,933) and the head is 4.2M blocks, and every module's store has to catch up across it before
-  # a single row is written — which is more than a free tier's monthly block quota all by itself, for
-  # history the Envelop oracle already serves. "Follow the head" is expressed here, in initialBlock, and
-  # not with `-s`: a start flag does not stop the stores from backfilling behind it.
-  # Consequence, and it is deliberate: managers created before this block are not in the registry, so
-  # this deployment answers for managers created from 8 September 2026 onward.
+  # Back to the factory block. It was moved to 58,100,000 when a 4.2M-block catch-up looked unaffordable
+  # — every module's store backfills from initialBlock before a single row is written, and a start flag
+  # does not change that. The block filter removed the reason: measured on mainnet, 58,876 blocks in
+  # scope cost 1,149 processed, so this chain's whole history is on the order of 85k blocks rather than
+  # 4.2M. The index therefore covers every manager this factory ever produced, which is the difference
+  # between answering a position's history and declining it.
   unichain:
     initialBlock:
-      map_raw_events: 58100000
-      store_managers: 58100000
-      map_events: 58100000
-      map_positions: 58100000
-      index_events: 58100000
-      db_out: 58100000
-      store_position_totals: 58100000
-      store_position_open: 58100000
-      graph_out: 58100000
+      map_raw_events: 53877933
+      store_managers: 53877933
+      map_events: 53877933
+      map_positions: 53877933
+      index_events: 53877933
+      db_out: 53877933
+      store_position_totals: 53877933
+      store_position_open: 53877933
+      graph_out: 53877933
     params:
       map_raw_events: "0x62d51dff0c264a5af8452a10789e4c98b7413a3c"
