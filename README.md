@@ -162,7 +162,7 @@ so there is one manifest rather than five copies of it:
 
 ```bash
 substreams run -e arb-one.streamingfast.io:443 --network arbitrum-one \
-  ./envelop-lp-v4-v0.2.0.spkg map_positions -s 486481990 -t +40
+  ./envelop-lp-v4-v0.2.1.spkg map_positions -s 486481990 -t +40
 ```
 
 | Chain | Factory | First block |
@@ -176,6 +176,18 @@ substreams run -e arb-one.streamingfast.io:443 --network arbitrum-one \
 `initialBlock` in the manifest is pinned to the mainnet factory. Pointing at another chain means moving
 it too — a genesis pin turns every cold start into a full-chain backfill, because the store has to catch
 up from `initialBlock` each time.
+
+That last sentence is also the reason **Unichain is indexed from block 58,100,000 rather than from its
+factory**, while mainnet is indexed from the factory block. It is the same trade in both cases, decided
+by the size of the gap: on mainnet the factory is 0.35M blocks behind the head, so the whole history of
+every manager costs about a million billed blocks; on Unichain the gap is 4.2M blocks and one-second
+blocks, which is more than a free tier's monthly quota before a single row is written. So the Unichain
+deployment answers for managers created from 8 September 2026 onward, and the Envelop oracle keeps
+serving what came before.
+
+Note what this means for a start flag: `-s <recent block>` does **not** buy the same saving. The stores
+still catch up from `initialBlock` behind it, and those blocks are billed. Cheap "follow the head" is
+expressed in the manifest, not on the command line.
 
 ## Filtering blocks, and why it matters
 
@@ -213,8 +225,8 @@ The sink ships inside the CLI; the standalone `substreams-sink-sql` binary is de
 
 ```bash
 export SUBSTREAMS_SINK_DSN="postgres://user:pass@host:5432/db?sslmode=require"
-substreams sink postgres setup ./envelop-lp-v4-v0.2.0.spkg   # bookkeeping tables + schema.sql
-substreams sink postgres       ./envelop-lp-v4-v0.2.0.spkg   # runs; no `run` subcommand
+substreams sink postgres setup ./envelop-lp-v4-v0.2.1.spkg   # bookkeeping tables + schema.sql
+substreams sink postgres       ./envelop-lp-v4-v0.2.1.spkg   # runs; no `run` subcommand
 ```
 
 `setup` creates its own `cursors` and `substreams_history` tables alongside ours — that is how it resumes
