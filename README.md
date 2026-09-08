@@ -98,7 +98,7 @@ not from the `substreams-entity-change` crate: that crate's current release is b
 The manifest still **imports the official `.spkg`**, so the descriptor a consumer reads is the canonical
 one — the local copy exists only so Rust has types.
 
-### Deploying the subgraph
+### Deploying the subgraph — and where that road now ends
 
 ```bash
 substreams pack                  # refresh the .spkg the datasource points at
@@ -106,8 +106,19 @@ graph auth <deploy key>          # from Subgraph Studio
 graph deploy <subgraph slug>
 ```
 
-One deployment per chain: `network:` in `subgraph.yaml` and the factory parameter in `substreams.yaml`
-change together.
+That is the documented route, and as of **8 September 2026 Subgraph Studio refuses it**:
+
+> Substreams-powered Subgraphs, originally intended for non-EVM chains, are no longer supported. If you
+> need help migrating to standalone Substreams, please reach out in the #substreams channel on Discord.
+
+The build and the IPFS upload succeed; the rejection comes from the node. So `graph_out` and
+[`schema.graphql`](./schema.graphql) stay in the package — the module is written, tested against a live
+chain, and costs nothing unless a consumer asks for it — but the hosted deployment of it is closed. Any
+graph-node that still accepts a substreams datasource will take this package as it is; The Graph's own
+hosting will not, and this README says so rather than leaving a reader to find out at deploy time.
+
+One deployment per chain either way: `network:` in `subgraph.yaml` and the factory parameter in
+`substreams.yaml` change together.
 
 ## Building
 
