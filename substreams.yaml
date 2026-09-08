@@ -2,7 +2,7 @@ specVersion: v0.1.0
 
 package:
   name: envelop_lp_v4
-  version: v0.2.3
+  version: v0.2.4
   url: https://github.com/dao-envelop/ethonline-2026-substreams-v4-lp
   description: Typed events, operators and position deltas for Uniswap v4 LP managers
 
@@ -213,22 +213,28 @@ networks:
       graph_out: 48918859
     params:
       map_raw_events: "0x7a3c8f45b809078da58d17fb6cd059334622838f"
-  # Back to the factory block. It was moved to 58,100,000 when a 4.2M-block catch-up looked unaffordable
-  # — every module's store backfills from initialBlock before a single row is written, and a start flag
-  # does not change that. The block filter removed the reason: measured on mainnet, 58,876 blocks in
-  # scope cost 1,149 processed, so this chain's whole history is on the order of 85k blocks rather than
-  # 4.2M. The index therefore covers every manager this factory ever produced, which is the difference
-  # between answering a position's history and declining it.
+  # A recent block, not the factory's, and this is a standing decision rather than a tuning knob.
+  #
+  # The store backfills from initialBlock before a single row is written, and a start flag does not
+  # change that — so where a chain is indexed from is decided here. On this chain the factory is 4.2M
+  # one-second blocks behind the head, and the filter above does not make that free: measured on a
+  # running sink it processes ~15% of the blocks in scope, not the ~2% a single-stage `substreams run`
+  # suggests (the sink counts both stages, and 1000-block segments are pulled in whole by one
+  # interesting block). That puts this chain's full history at ~1.27M processed blocks — more than half
+  # of a free tier's monthly quota, spent on history the Envelop oracle already serves.
+  #
+  # So: 58,125,000, just under the manager created on 2026-09-08 for the demo. Older managers on this
+  # chain answer from the oracle through lp-insight's cascade, which is what the cascade is for.
   unichain:
     initialBlock:
-      map_raw_events: 53877933
-      store_managers: 53877933
-      map_events: 53877933
-      map_positions: 53877933
-      index_events: 53877933
-      db_out: 53877933
-      store_position_totals: 53877933
-      store_position_open: 53877933
-      graph_out: 53877933
+      map_raw_events: 58125000
+      store_managers: 58125000
+      map_events: 58125000
+      map_positions: 58125000
+      index_events: 58125000
+      db_out: 58125000
+      store_position_totals: 58125000
+      store_position_open: 58125000
+      graph_out: 58125000
     params:
       map_raw_events: "0x62d51dff0c264a5af8452a10789e4c98b7413a3c"
