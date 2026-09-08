@@ -67,6 +67,26 @@ silently round — the same choice the existing Envelop history API made, for th
 | `Reinvested`, `WithdrawnTo`, `ProtocolFeeTaken` | manager | |
 | `ModifyLiquidity` | Uniswap v4 `PoolManager` | The position model. |
 
+## Composition: a published index decides which blocks we open
+
+The package imports [`ethereum-common`](https://substreams.dev/packages/ethereum-common/v0.3.3)
+(StreamingFast) and uses its `index_events` module as a **block filter** on the two modules that read
+raw blocks. That module keys every block by the event signatures and contract addresses it contains, so
+a block holding none of our eleven signatures is never opened by `map_raw_events`, and one with no
+`ModifyLiquidity` is never opened by `map_positions`.
+
+This is the largest cost lever the platform offers — billing is per block processed, and these managers
+are active in a tiny fraction of blocks. Measured on Unichain over the 30-block window that contains a
+manager's creation: **32 processed blocks with the filter against 61 without**, for identical output. On
+a backfill, where almost every block is empty of ours, the ratio is not close.
+
+The filter lists **every** signature the decoder handles. A superset would be harmless — anything extra
+is dropped in the map — but a missing one would silently skip blocks that hold our data, which is the
+one way a block filter can be wrong.
+
+This package is itself published to the registry: **[`envelop-lp-v4`](https://substreams.dev/packages/envelop-lp-v4)**,
+so it can be imported the same way by anyone else.
+
 ## Two sinks, one decoder
 
 The same modules feed two Graph products, which is the point rather than a convenience:
@@ -173,7 +193,7 @@ so there is one manifest rather than five copies of it:
 
 ```bash
 substreams run -e arb-one.streamingfast.io:443 --network arbitrum-one \
-  ./envelop-lp-v4-v0.2.1.spkg map_positions -s 486481990 -t +40
+  ./envelop-lp-v4-v0.2.2.spkg map_positions -s 486481990 -t +40
 ```
 
 | Chain | Factory | First block |
@@ -236,8 +256,8 @@ The sink ships inside the CLI; the standalone `substreams-sink-sql` binary is de
 
 ```bash
 export SUBSTREAMS_SINK_DSN="postgres://user:pass@host:5432/db?sslmode=require"
-substreams sink postgres setup ./envelop-lp-v4-v0.2.1.spkg   # bookkeeping tables + schema.sql
-substreams sink postgres       ./envelop-lp-v4-v0.2.1.spkg   # runs; no `run` subcommand
+substreams sink postgres setup ./envelop-lp-v4-v0.2.2.spkg   # bookkeeping tables + schema.sql
+substreams sink postgres       ./envelop-lp-v4-v0.2.2.spkg   # runs; no `run` subcommand
 ```
 
 `setup` creates its own `cursors` and `substreams_history` tables alongside ours — that is how it resumes
