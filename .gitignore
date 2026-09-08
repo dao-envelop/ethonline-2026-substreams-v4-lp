@@ -8,3 +8,4 @@
 
 # Secrets: The Graph Market key and anything else the sink needs.
 .env
+build/

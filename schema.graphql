@@ -9,7 +9,7 @@
 # block numbers are `BigInt`: uint256 fits nothing narrower, and a float would round silently.
 
 "An LP manager clone produced by LPManagerFactory. Created once, from its deployment event."
-type Manager @entity {
+type Manager @entity(immutable: false) {
   "The manager (proxy) address."
   id: ID!
   address: Bytes!
@@ -37,7 +37,7 @@ enforced by the contract. One row per (manager, operator), rewritten on every ch
 is the current answer rather than something a consumer has to fold: transferring the manager NFT
 revokes every operator in a single block, and those revocations land here as ordinary updates.
 """
-type Operator @entity {
+type Operator @entity(immutable: false) {
   "manager-operator"
   id: ID!
   manager: Manager!
@@ -52,7 +52,7 @@ A position, keyed by the salt its manager chose. Built from Uniswap's own `Modif
 from manager events: `Allocated` carries only a leg count, no manager event carries amounts, and for the
 volatile product nothing on chain links a salt to its pool.
 """
-type Position @entity {
+type Position @entity(immutable: false) {
   "manager-salt"
   id: ID!
   manager: Manager!
