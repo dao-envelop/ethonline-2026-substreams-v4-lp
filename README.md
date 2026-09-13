@@ -76,13 +76,38 @@ a block holding none of our eleven signatures is never opened by `map_raw_events
 `ModifyLiquidity` is never opened by `map_positions`.
 
 This is the largest cost lever the platform offers — billing is per block processed, and these managers
-are active in a tiny fraction of blocks. Measured on Unichain over the 30-block window that contains a
-manager's creation: **32 processed blocks with the filter against 61 without**, for identical output. On
-a backfill, where almost every block is empty of ours, the ratio is not close.
+are active in a tiny fraction of blocks. On a chain with sub-second blocks it decides whether a backfill
+fits inside a free tier: Arbitrum alone is ~15.5M blocks of history and ~345k more per day. Measured:
+
+| Where | Without the filter | With it |
+|---|---:|---:|
+| Unichain, the 30-block window containing a manager's creation | 61 | **32** |
+| Mainnet, during the event | 58,876 in scope | **1,149 processed** |
+
+Identical output either way. On a backfill, where almost every block is empty of ours, the ratio only
+widens.
 
 The filter lists **every** signature the decoder handles. A superset would be harmless — anything extra
 is dropped in the map — but a missing one would silently skip blocks that hold our data, which is the
 one way a block filter can be wrong.
+
+**Consumers get the same lever.** `index_events` emits two key families — `evt:<name>` and
+`mgr:<address>` — so anything downstream can declare a `blockFilter` and have the engine skip the rest:
+
+```yaml
+  - name: my_consumer
+    kind: map
+    blockFilter:
+      module: index_events
+      query:
+        params: true
+    inputs:
+      - params: string
+      - map: map_events
+```
+
+It is not wired into this package's own modules: which query is right depends on what the consumer
+wants, and a hardcoded one would be wrong for everyone else.
 
 This package is itself published to the registry: **[`envelop-lp-v4`](https://substreams.dev/packages/envelop-lp-v4)**,
 so it can be imported the same way by anyone else.
@@ -94,8 +119,9 @@ The same modules feed two Graph products, which is the point rather than a conve
 * **`db_out` → Postgres**, through `substreams-sink-sql`. Eleven event tables plus `position_delta`,
   matching the schema Envelop's existing indexer already serves in production, so rows from the two can
   be compared one against the other.
-* **`graph_out` → a Substreams-powered subgraph**, deployed from [`subgraph.yaml`](./subgraph.yaml)
-  against [`schema.graphql`](./schema.graphql).
+* **`graph_out` → a Substreams-powered subgraph**, described by [`subgraph.yaml`](./subgraph.yaml)
+  against [`schema.graphql`](./schema.graphql) — written and verified, but no longer deployable to
+  Studio (below).
 
 The subgraph is deliberately **not** the SQL shape. A table dump is what a sink wants; a subgraph is
 queried by people and by agents, so it gets a model: `Manager`, `Operator` (the current answer to "who
@@ -153,7 +179,7 @@ substreams run -e mainnet.eth.streamingfast.io:443 map_events -s 25580292 -t +10
 ```
 
 Verified with `substreams` 1.22.0, `rustc` 1.98.1 and `protoc` 36.1: the package builds and packs with
-no warnings, and `substreams info` lists all five modules.
+no warnings, and `substreams info` lists all nine modules.
 
 ### Verified against a live chain
 
@@ -187,6 +213,8 @@ Backfilling the store from the factory's first block to that point processed ~34
 cached, so later runs over the same range are free; the CLI also refuses to process more than 10,000
 blocks unless `--limit-processed-blocks` says otherwise, which is a useful guard against an accidental
 full-chain backfill.
+
+## Networks, and where each one starts
 
 Switch networks with `--network`; the manifest carries the factory address and the first block for each,
 so there is one manifest rather than five copies of it:
@@ -224,30 +252,6 @@ the log said 162,498 blocks, while the portal's billed counter moved by **2,316*
 single run reports. The whole of mainnet's history from its factory block cost about two thousand billed
 blocks.
 
-## Filtering blocks, and why it matters
-
-Billing is **per block processed**, and these managers are active in a tiny fraction of blocks. On a
-chain with sub-second blocks that is the difference between a backfill that fits inside a free tier and
-one that does not: Arbitrum alone is ~15.5M blocks of history and ~345k more per day.
-
-`index_events` emits two key families — `evt:<name>` and `mgr:<address>` — so a consumer can declare a
-`blockFilter` and have the engine skip everything else:
-
-```yaml
-  - name: my_consumer
-    kind: map
-    blockFilter:
-      module: index_events
-      query:
-        params: true
-    inputs:
-      - params: string
-      - map: map_events
-```
-
-Not wired into this package's own modules yet: which query is right depends on what the consumer wants,
-and a hardcoded one would be wrong for everyone else.
-
 ## SQL sink
 
 `schema.sql` in this repository is the schema — twelve tables, eleven event types plus `position_delta`.
@@ -279,11 +283,6 @@ Two things worth knowing before editing the manifest:
 - **Changing `imports` invalidates the cache.** Module hashes cover the package's proto definitions, so
   adding the import made a 338k-block store backfill run again from scratch. Cheap to discover, less
   cheap to discover on a big chain.
-
-## Not done yet
-
-- `graph_out` (subgraph entities). A different sink contract — `EntityChanges`, not `DatabaseChanges` —
-  and mixing the two produces a pipeline that builds and writes rubbish, so it gets its own module.
 
 ## License
 
